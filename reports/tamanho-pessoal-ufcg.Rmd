@@ -1,0 +1,124 @@
+---
+title: "As unidades acadêmicas da UFCG"
+author: Hadrizia Santos
+html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+---
+
+Esse documento tem como objetivo agrupar as unidades acadêmicas da UFCG. O relatório inicial que serviu como base para este foi feito pelo professor Nazareno Andrade e pode ser encontrado [aqui](https://github.com/nazareno/tamanhos-da-ufcg).
+
+## 1. Importando dados e bibliotecas
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(viridis)
+library(DT)
+library(here)
+library(plyr)
+library(broom)
+library(ggfortify)
+library(plotly)
+```
+
+```{r}
+ufcg_uas = readr::read_csv(here::here("data/ufcg-201704-sumario-UAs-wide.csv"), 
+                            col_types = cols(
+                                UORG_LOTACAO = col_character(),
+                                Outro = col_double(),
+                                `Professor 20h` = col_double(),
+                                `Professor 40h ou DE` = col_double(),
+                                idade_25perc = col_double(),
+                                idade_mediana = col_double(),
+                                idade_75perc = col_double()
+                            ))
+colnames(ufcg_uas) <- c('ua', 'outros_funcionarios', 'professor_20h', 'professor_40h_ou_DE', 
+                      'idade_25perc', 'idade_mediana', 'idade_75perc')
+```
+
+As colunas dos dados estão descritas abaixo:
+
+* `ua` Unidade acadêmica de lotação do funcionário   
+* `outros_funcionarios` Número de funcionários na UA que não são professores   
+* `professor_20h` Número de professores com carga horária 20h/semana na UA   
+* `professor_40h_ou_DE` Número de professores com carga horária 40h/semana na UA, sejam eles Dedicação Exclusiva ou não
+* `idade_25perc`, `idade_mediana` e `idade_75perc` : 25, 50 e 75 percentil da idade dos funcionários *no cargo* (ex: idade_25perc = 10 significa que 25% dos funcionários, sejam eles professores ou não, da UA tem 10 anos ou menos na profissão.)  
+
+## 2. Agrupando os dados
+
+Deseja-se agrupar os dados de acordo com 4 variáveis: O número de funcionários que não são professores, o número de professores com carga horária de 40h/semana, o número de professores com carga horária de 20h/semanais e a idade_75perc, que indica o tempo de trabalho de 75% dos funcionários. O método usado para este agrupamento será o *k-means*, um método procura particionar as observações dentre k grupos, onde cada observação pertence ao grupo mais próximo da média (centróide). Mais sobre o k-means pode ser encontrado neste [site](http://www.diegonogare.net/2015/08/entendendo-como-funciona-o-algoritmo-de-cluster-k-means/). 
+
+### 2.1. Escolhendo o K no algoritmo
+ O K é a quantidade de centróides (pontos centrais dos grupos) que serão criados e ajudará a encontrará a similaridade dos dados. Há duas formas comumente utilizadas: a GAP statistic, que é mais robusta, mas precisa de mais dados para isso, e between/total sum of squares, que é mais comum, e menos robusta. Como se trata de poucos dados, a forma utilizada será a between/total sum of squares.
+
+**Between/total sum of squares**:   compara a distância (quadrática) entre o centro dos clusters e o centro dos dados com a distância (quadrática) entre os pontos todos nos dados e o centro dos dados. Mais sobre o Between/totss pode ser encontrado [aqui](https://github.com/nazareno/ciencia-de-dados-1/blob/master/3-Agrupamento-e-PCA/2-kmeans-e-mais-exemplos.Rmd#betweentotss).
+
+```{r}
+# Setando a partição reproduzível
+set.seed(123)
+
+# Setando o válor máximo de k entre 1 e 10
+k = 1:15
+
+explorando_k = (tibble(k)) %>% 
+    group_by(k) %>% 
+    do(
+        kmeans(select(ufcg_uas, -ua, -idade_mediana, -idade_25perc), 
+               centers = .$k, 
+               nstart = 20) %>% glance()
+    )
+
+explorando_k %>% 
+    ggplot(aes(x = k, y = betweenss / totss)) + 
+    geom_line() + 
+    geom_point() + ggtitle("Explorando os valores de K")
+```
+
+Um k ótimo é aquele que, depois dele, o betweenss / totss não cresce tanto a medida que o k cresce. A partir do gráfico se pode ver que depois de 4, à medida que o k cresce, p betweenss / totss vai crescendo em proporção menor do que estava até o k chegar a 4. Isto indica que 4 é o nosso k ótimo.
+
+### 2.2. Visualizando os agrupamentos
+
+```{r}
+n_clusters = 4
+
+ufcg_uas %>% 
+  select(-ua, -idade_mediana, -idade_25perc) %>%
+    kmeans(n_clusters, iter.max = 100, nstart = 20) -> km
+
+autoplot(km, data=ufcg_uas %>% 
+  select(-ua, -idade_mediana, -idade_25perc), frame = TRUE) + ggtitle("As Unidades Acadêmicas da UFCG agrupadas")
+```
+```{r}
+ua_agrupadas = km %>% 
+  augment(ufcg_uas) %>% 
+  gather(key = "variável",
+         value = "valor",
+         -ua,
+         -idade_mediana,
+         -idade_25perc,
+         -.cluster)
+
+ua_agrupadas %>% 
+  ggplot(aes(x = `variável`,
+             y = valor,
+             group = ua,
+             label = ua,
+             colour = .cluster)) +
+  geom_line(alpha = .5) +
+    geom_point() +
+  coord_flip() +
+  facet_wrap(~ .cluster) +
+ ggtitle("Agrupamentos vistos de perto")
+```
+
+
+### 2.3. Nomeando os grupos encontrados
+
+A seguir tem-se a descrição dos grupos encontrados.
+
+* `3ª idade`: formado pelas unidades acadêmicas onde 50% dos funcionários trabalham de 20 a 40 anos na UFCG. 
+* `Durmo em casa mas moro na UFCG`: formado pelas unidades acadêmicas onde há mais professores que trabalham 40h por semana.
+* `Quase estagiários`: formado pelas UAs onde 50% dos seus funcionários trabalham de 0 a 15 anos na UFCG.
+* `Meio-professor`: formado pelas UAs onde há mais professores que trabalham 20h por semana.
